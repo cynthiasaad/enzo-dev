@@ -19,14 +19,13 @@
 #include "macros_and_parameters.h"
 #include "typedefs.h"
 #include "global_data.h"
-#include "phys_constants.h"
+#include "list.h"
 #include "Fluxes.h"
 #include "GridList.h"
 #include "ExternalBoundary.h"
 #include "TopGridData.h"
 #include "Grid.h"
 #include "EOS.h"
-#include "hydro_rk/SuperNova.h"
 
 int GetUnits(float *DensityUnits, float *LengthUnits,
 	     float *TemperatureUnits, float *TimeUnits,
@@ -37,15 +36,22 @@ int FindField(int field, int farray[], int numfields);
 void mt_init(unsigned_int seed);
 unsigned_long_int mt_random();
 
-int grid::MHDSourceTerms(float **dU, float min_coeff)
+int grid::MHDSourceTerms(float **dU)
 {
 
   if (ProcessorNumber != MyProcessorNumber) {
     return SUCCESS;
   }
 
+  float eta; 
+  unsigned_long_int therandominteger;
+  therandominteger = mt_random();
+  eta =  float((therandominteger%32768)) /  32768.0;
+  
+  double mp = 1.67e-24;
+  float rho, nH2, cs;
   int DensNum, GENum, TENum, Vel1Num, Vel2Num, Vel3Num, 
-    B1Num, B2Num, B3Num, PhiNum;
+    B1Num, B2Num, B3Num, PhiNum, index;
   this->IdentifyPhysicalQuantities(DensNum, GENum, Vel1Num, Vel2Num, Vel3Num, 
 				   TENum, B1Num, B2Num, B3Num, PhiNum);
 
@@ -56,7 +62,17 @@ int grid::MHDSourceTerms(float **dU, float min_coeff)
 	== FAIL) {
       ENZO_FAIL("Error in CosmologyComputeExpansionFactors.");
     }
-  
+
+/* The idea is to add saturated magnetic field in the cell where
+ the number density is greater that 1e8 pcc.
+*/  
+  float DensityUnits = 1.0, LengthUnits = 1.0, TemperatureUnits = 1, 
+    TimeUnits = 1.0, VelocityUnits = 1.0;
+  GetUnits(&DensityUnits, &LengthUnits, &TemperatureUnits,
+	 &TimeUnits, &VelocityUnits, Time);
+//  int index;
+//  float rho, nH2
+
 
 
   if (DualEnergyFormalism) {
@@ -65,6 +81,11 @@ int grid::MHDSourceTerms(float **dU, float min_coeff)
     FLOAT dtdx = coef*dtFixed/CellWidth[0][0]/a,
       dtdy = (GridRank > 1) ? coef*dtFixed/CellWidth[1][0]/a : 0.0,
       dtdz = (GridRank > 2) ? coef*dtFixed/CellWidth[2][0]/a : 0.0;
+    float min_coeff = 0.0;
+    if (UseMinimumPressureSupport) {
+      min_coeff = MinimumPressureSupportParameter*
+	0.32*pow(CellWidth[0][0],2)/(Gamma*(Gamma-1.0));
+    }
     float rho, eint, p, divVdt, h, cs, dpdrho, dpde;
     int n = 0;
     for (int k = GridStartIndex[2]; k <= GridEndIndex[2]; k++) {
@@ -288,64 +309,6 @@ int grid::MHDSourceTerms(float **dU, float min_coeff)
       }
     }
   }
-
-  if (UseSGSModel) {
-    // if an explicit filtering operation should be used, otherwise
-    // grid-scale quantities are used
-    if (SGSFilterWidth > 1.) {
-      if (this->SGSUtil_FilterFields() == FAIL) {
-        fprintf(stderr, "grid::MHDSourceTerms: Error in SGSUtil_FilterFields.\n");
-        return FAIL;
-      }
-
-      // if the partial derivatives of primitive variables are required
-      // in the calculation of the SGS models
-      if (SGSNeedJacobians) {
-        // velocity Jacobian
-        if (this->SGSUtil_ComputeJacobian(JacVel,FilteredFields[1],FilteredFields[2],FilteredFields[3]) == FAIL) {
-          fprintf(stderr, "grid::MHDSourceTerms: Error in SGSUtil_ComputeJacobian(Vel).\n");
-          return FAIL;
-        }
-        // magnetic field Jacobian
-        if (this->SGSUtil_ComputeJacobian(JacB,FilteredFields[4],FilteredFields[5],FilteredFields[6]) == FAIL) {
-          fprintf(stderr, "grid::MHDSourceTerms: Error in SGSUtil_ComputeJacobian(B).\n");
-          return FAIL;
-        }
-      }
-
-      // Scale-similarity type models need filtered mixed terms, such as flt(u_i B_j), etc.
-      if (SGSNeedMixedFilteredQuantities) {
-        if (this->SGSUtil_ComputeMixedFilteredQuantities() == FAIL) {
-          fprintf(stderr, "grid::MHDSourceTerms: Error in SGSUtil_ComputeMixedFilteredQuantities().\n");
-          return FAIL;
-        }
-      }
-
-    } else {
-      /* we don't need a special check for SGSNeedJacobians here as all models apart
-       * from the scale-similarity model need Jacbobians and the scale-similarity model
-       * always has SGSFilterWidth > 1.
-       */
-      if (this->SGSUtil_ComputeJacobian(JacVel,BaryonField[Vel1Num],BaryonField[Vel2Num],BaryonField[Vel3Num]) == FAIL) {
-        fprintf(stderr, "grid::MHDSourceTerms: Error in SGSUtil_ComputeJacobian(Vel).\n");
-        return FAIL;
-      }
-      if (this->SGSUtil_ComputeJacobian(JacB,BaryonField[B1Num],BaryonField[B2Num],BaryonField[B3Num]) == FAIL) {
-        fprintf(stderr, "grid::MHDSourceTerms: Error in SGSUtil_ComputeJacobian(B).\n");
-        return FAIL;
-      }
-    }
-
-    if (this->SGS_AddMomentumTerms(dU) == FAIL) {
-      fprintf(stderr, "grid::MHDSourceTerms: Error in SGS_AddMomentumTerms(dU).\n");
-      return FAIL;
-    }
-
-    if (this->SGS_AddEMFTerms(dU) == FAIL) {
-      fprintf(stderr, "grid::MHDSourceTerms: Error in SGS_AddEMFTerms(dU).\n");
-      return FAIL;
-    }
-  }
   
   /* Add centrifugal force for the shearing box */
 
@@ -413,74 +376,66 @@ int grid::MHDSourceTerms(float **dU, float min_coeff)
     }
   }
   
-  if(UseMagneticSupernovaFeedback) {
- 
-    int n, active_x, active_y, center_i, center_j, center_k, num_sn_cells_x, num_sn_cells_y, num_sn_cells_z; 
-    snsf_source_terms S;
-    float dx, dy, dz, dist_to_sn, magnetic_energy_density;
-    float DensityUnits, LengthUnits, TemperatureUnits, TimeUnits, VelocityUnits;
+if((UseSupernovaSeedFieldSourceTerms == 1)) {
 
-    if (GetUnits(&DensityUnits, &LengthUnits,&TemperatureUnits, &TimeUnits,
-               &VelocityUnits, Time) == FAIL){
-      fprintf(stderr, "Error in GetUnits.\n");
-      return FAIL;
+  int n = 0, igrid;
+  int iden=FindField(Density, FieldType, NumberOfBaryonFields);
+  snsf_source_terms S;
+  List<SuperNova>::Iterator *P = this->SuperNovaList.begin();
+  FLOAT cell_center[3];
+  FLOAT dx, dy, dz, dist_to_sn;
+  int temp =1;
+  int entered = 0;
+
+  for (int k = GridStartIndex[2]; k <= GridEndIndex[2]; k++) {
+    for (int j = GridStartIndex[1]; j <= GridEndIndex[1]; j++) {
+      for (int i = GridStartIndex[0]; i <= GridEndIndex[0]; i++, n++) {
+	igrid = i+(j+k*GridDimension[1])*GridDimension[0];
+
+	cell_center[0] = CellLeftEdge[0][i] + 0.5*CellWidth[0][i];
+	cell_center[1] = CellLeftEdge[1][j] + 0.5*CellWidth[1][j];
+	cell_center[2] = CellLeftEdge[2][k] + 0.5*CellWidth[2][k];
+
+	while(P != this->SuperNovaList.end()){
+	  dx = P->get()->getPosition()[0] - cell_center[0];
+	  dy = P->get()->getPosition()[1] - cell_center[1];
+	  dz = P->get()->getPosition()[2] - cell_center[2];
+
+	  dist_to_sn = sqrt(dx*dx + dy*dy + dz*dz);
+	  if (dist_to_sn < 1.1*SupernovaSeedFieldRadius){
+	    S = P->get()->getSourceTerms(dx, dy, dz, Time);
+   	    double rho = BaryonField[DensNum][igrid];
+
+	    dU[iBx][n] += S.dbx*dtFixed;
+	    dU[iBy][n] += S.dby*dtFixed;
+	    dU[iBz][n] += S.dbz*dtFixed;
+	    dU[iEtot][n] += S.dUtot*dtFixed;
+
+	  }
+	  P = P->next();
+	}// End of SuperNovaList iteration                                                                                           
+      } // End of k for-loop                                                                                                         
+    } // End of j for-loop                                                                                                           
+  } // End of i for-loop                                                                                                             
+
+} // End of UseSuperNovaSeedFieldSourceTerms scope                                                                                   
+
+if (UseMHD){
+  for (int k = GridStartIndex[2]; k <= GridEndIndex[2]; k++) {
+    for (int j = GridStartIndex[1]; j <= GridEndIndex[1]; j++) {
+      for (int i = GridStartIndex[0]; i <= GridEndIndex[0]; i++) {
+        index = i + GridDimension[0]*(j + GridDimension[1]*k);
+	rho = BaryonField[DensNum][index]; 
+    	nH2 = rho*DensityUnits/(Mu*mp);
+	if (nH2 > 2) {
+          BaryonField[B1Num][index] = cs* sqrt(8 * PI * rho * eta) ;
+          BaryonField[B2Num][index] = cs* sqrt(8 * PI * rho * eta) ;
+          BaryonField[B3Num][index] = cs* sqrt(8 * PI * rho * eta) ;
+        }
+      }
     }
-
-    // Converting radius from parsecs to cm, then internal units   
-    float sn_radius = MagneticSupernovaRadius * pc_cm / LengthUnits;
-
-    active_x = GridDimension[0] - 2*NumberOfGhostZones; 
-    active_y = GridDimension[1] - 2*NumberOfGhostZones;
-
-    // the number of additional cells that receive magnetic supernova feedback. 
-    // assuming the supernova is in the center of one cell
-    num_sn_cells_x = (int) ((sn_radius - 0.5*CellWidth[0][0])/ CellWidth[0][0]); 
-    num_sn_cells_y = (int) ((sn_radius - 0.5*CellWidth[1][0])/ CellWidth[1][0]);
-    num_sn_cells_z = (int) ((sn_radius - 0.5*CellWidth[2][0])/ CellWidth[2][0]);
-			    
-    for (std::vector<SuperNova>::iterator current_sn = this->MagneticSupernovaList.begin(); 
-           current_sn != this->MagneticSupernovaList.end(); current_sn++){
-
-      // find index of the cell nearest to the supernova center
-      // assuming that supernova in the center of that cell
-      center_i  = (int)((current_sn->getPosition()[0] - GridLeftEdge[0]) / CellWidth[0][0]);  
-      center_j  = (int)((current_sn->getPosition()[1] - GridLeftEdge[1]) / CellWidth[1][0]);
-      center_k  = (int)((current_sn->getPosition()[2] - GridLeftEdge[2]) / CellWidth[2][0]);
-
-      for(int k = center_k - num_sn_cells_z; k <= center_k + num_sn_cells_z; k++){
-	for(int j = center_j - num_sn_cells_y; j <= center_j + num_sn_cells_y; j++){
-	  for(int i = center_i - num_sn_cells_x; i <= center_i + num_sn_cells_x; i++){
-	    
-	    // only add magnetic feedback on the active grid cells
-	    if ((k >= GridStartIndex[2]) && (k <= GridEndIndex[2]) && 
-		(j >= GridStartIndex[1]) && (j <= GridEndIndex[1]) &&
-		(i >= GridStartIndex[0]) && (i <= GridEndIndex[0])){
-	      
-	      dx = CellWidth[0][0] * (float)(i-center_i); 
-	      dy = CellWidth[1][0] * (float)(j-center_j);
-	      dz = CellWidth[2][0] * (float)(k-center_k);
-	 
-	      dist_to_sn = sqrt(dx*dx + dy*dy + dz*dz);
-	      S = current_sn->getSourceTerms(dx, dy, dz, Time);
-	    
-	      // solving for index n
-	      // analogous to how igrid is calculated, but taking into acount Ghost Zones
-	      n = (i - GridStartIndex[0])+((j-GridStartIndex[1]) + (k-GridStartIndex[2])*active_y) * active_x;
-	      
-	      dU[iBx][n] += S.dbx*dtFixed;
-	      dU[iBy][n] += S.dby*dtFixed;
-	      dU[iBz][n] += S.dbz*dtFixed;
-
-	      dU[iEtot][n] += S.dUtot * dtFixed;
-	      
-	    }
-
-	  } // End of k for-loop     
-	} // End of j for-loop    
-      } // End of i for-loop  
-    } // End of MagneticSupernovaList loop
-  } // End of UseMagneticSupernovaFeedback scope                                                                                   
-
+  }
+}
   
 
   return SUCCESS;
